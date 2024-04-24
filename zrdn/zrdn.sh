@@ -3,10 +3,12 @@
 config_file=$1
 zrdn_num=$2
 file_log=$3
+message_zrdn=$4
+temp_file=$5
 delim=":"
 ammo=20
 targets_dir="/tmp/GenTargets/Targets/"
-
+destroy_dir="/tmp/GenTargets/Destroy/"
 
 
 if [ -f "$config_file" ]; then
@@ -14,9 +16,6 @@ if [ -f "$config_file" ]; then
 	y0=$(grep -E "$zrdn_num$delim" "$config_file" -A 5 | grep 'y0:' | awk '{print $2}')
 	r=$(grep -E "$zrdn_num$delim" "$config_file" -A 5 | grep 'r:' | awk '{print $2}')
 
-	echo "x0=" $x0
-	echo "y0=" $y0
-	echo "r=" $r
 else
 	echo "Файл $config_file не найден."
 	exit 1
@@ -33,64 +32,56 @@ function InZrdnZone()
 
 	if (( $r <= $R ))
 	then
-		# local phi=$(echo | awk " { x=atan2($dy,$dx)*180/3.14; print x}")
-		# phi=(${phi/\,*})
-		# check_phi=$(echo "$phi < 0"| bc)
-		# if [[ "$check_phi" -eq 1 ]]
-		# then
-		# 	phi=$(echo "360 + $phi" | bc)
-		# fi
-		# let phiMin=0
-		# let phiMax=360
-		# echo "phi=" $phi
-		# echo "phiMin=" $phiMin
-		
-		# check_phiMax=$(echo "$phi <= $phiMax"| bc)
-		# check_phiMin=$(echo "$phi >= $phiMin"| bc)
-
-		# if (( $check_phiMax == 1 )) && (( $check_phiMin == 1 ))
-		# then
-			return 1
-		# fi
-	fi
-	return 0
-}
-
-function Speedometer()
-{
-	local vx=$1
-	local vy=$2
-
-	local v=$(echo "sqrt ( (($vx*$vx+$vy*$vy)) )" | bc -l)
-	if [[ $v<=1000 ]]
-	then
 		return 1
 	fi
 	return 0
 }
-
-function IsDestroyed()
-{
-	local random_num=$1
-	if (( $random_num >= 50 ))
-	then
-		return 1
-	fi 
-	return 0
-}
-
 
 
 
 while :
 do
+	# считывание из временного файла
+	temp_targets=`cat $temp_file`
+	# считывание из директория gentargets
+	files=`ls $targets_dir -t 2>/dev/null | head -30`
+	targets=""
+
+	# создание строки с id
+	for file in $files
+	do
+		targets="$targets ${file:12:6}"
+	done
+	# проверка, что цели из файла есть в директории gentargets
+	for temp_target in $temp_targets
+	do
+		id=$(echo $temp_target | awk -F ":" '{print $1}')
+		type=$(echo $temp_target | awk -F ":" '{print $2}')
+		if [[ $targets != *"$id"* ]]
+		then
+			if [[ $type  == "Самолет" ]]
+			then
+				if [[ `cat $message_zrdn | grep -c $id` == 0 ]]
+				then
+					echo "`date -u` $zrdn_num $id $x $y: Самолет поражен" >> $message_zrdn
+				fi
+			else
+				if [[ `cat $message_zrdn | grep -c $id` == 0 ]]
+				then
+					echo "`date -u` $zrdn_num $id $x $y: К.ракета поражена" >> $message_zrdn
+				fi
+			fi
+		fi
+	done
+	echo "" > $temp_file
+	
 	for file in `ls $targets_dir -t 2>/dev/null | head -30`
 	do
 		x=`cat $targets_dir$file | tr -d 'X''Y' | tr ',' ':' | cut -d : -f1 2>/dev/null`
 		y=`cat $targets_dir$file | tr -d 'X''Y' | tr ',' ':' | cut -d : -f2 2>/dev/null`
 		id=${file:12:6}
-		let dx=$x0-$x
-		let dy=$y0-$y
+		let dx=$x-$x0
+		let dy=$y-$y0
 
 		# проверка наличия цели в области зрдн
 		targetInZone=0
@@ -104,8 +95,8 @@ do
 			num=$(tail -n 30 $file_log | grep -c $id)
 			if [[ $num == 0 ]]
 			then
-				echo "Обнаружена цель ID: $id"
-				echo "$id $x $y" >> $file_log
+				# echo "Обнаружена цель ID: $id" >> $message_zrdn
+				echo "$id $x $y zrdn: $zrdn_num" >> $file_log
 			else
 				x1=$(echo "$str" | awk '{print $2}')
 				y1=$(echo "$str" | awk '{print $3}')
@@ -113,32 +104,31 @@ do
 				let vy=y-y1
 
 				# проверка цели для зрдн
-				Speedometer $vx $vy
-				SpeedometerResult=$?
-				if [[ $SpeedometerResult -eq 1 ]]
+				v=$(echo "sqrt ( (($vx*$vx+$vy*$vy)) )" | bc -l)
+				rocket=$(echo "$v>=250 && $v<=1000 "| bc -l)
+				plane=$(echo "$v>=50 && $v<=250 "| bc -l)
+				# проверка на ракету
+				if [ $rocket -eq 1 ]
 				then
 					# проверка на наличие противоракет
 					if [[ $ammo -gt 0 ]]
 					then
-						# две попытки поразить цель
-						for num in 1 2
-						do
-							let ammo=ammo-1
-							random_num=$((1 + $RANDOM % 100))
-							IsDestroyed $random_num
-							IsDestroyedResult=$?
-
-							# если цель поражена, то второй раз не стреляем
-							if [[ $IsDestroyedResult -eq 1 ]]
-							then 
-								echo "Цель $id поражена"
-								echo ""
-								break
-							fi
-						done
+						let ammo=ammo-1
+						echo "" > "$destroy_dir$id"
+						echo "$id:К.ракета" >> $temp_file
 					else
-						echo "Противоракеты закончились"
-						echo ""
+						echo "Противоракеты закончились" >> $message_zrdn
+					fi 
+				# проверка на самолет
+				elif [ $plane -eq 1 ]; then
+					# проверка на наличие противоракет
+					if [[ $ammo -gt 0 ]]
+					then
+						let ammo=ammo-1
+						echo "" > "$destroy_dir$id"
+						echo "$id:Самолет" >> $temp_file
+					else
+						echo "$zrdn_num: Противоракеты закончились" >> $message_zrdn
 					fi 
 				fi
 			fi
